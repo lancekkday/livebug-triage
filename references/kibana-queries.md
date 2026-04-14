@@ -17,13 +17,23 @@ GET {jaeger_url}/api/traces/{traceID}
 Accept: application/json
 ```
 
-從 Kibana log 的 `trace` 欄位取得 traceID（16 進位字串，e.g. `18a3f53a11c8761218a3f53a11c823f4`）。
+從 Kibana 查詢 A 結果的每筆 `_source.trace` 欄位取得 traceID（16 進位字串）。
+
+```python
+# 從 Kibana 查詢 A response 取出 trace IDs
+trace_ids = list({
+    hit["_source"]["trace"]
+    for hit in kibana_response["hits"]["hits"]
+    if "trace" in hit["_source"]
+})
+# → e.g. ["18a3f53a11c8761218a3f53a11c823f4", ...]
+```
 
 ### Response 結構
 ```json
 {
   "data": [{
-    "traceID": "18a3f53a11c876...",
+    "traceID": "<從 Kibana log trace 欄位取得>",
     "spans": [{
       "spanID":        "abc123",
       "operationName": "PUT /api/v1/drafts/packages/1967203/descriptions",
@@ -111,7 +121,8 @@ Headers:
   "size": 200,
   "_source": [
     "@timestamp", "service", "level", "log_label",
-    "request.uuid", "message", "status", "http_method",
+    "request.uuid", "trace",
+    "message", "status", "http_method",
     "url", "response_status", "exception"
   ]
 }

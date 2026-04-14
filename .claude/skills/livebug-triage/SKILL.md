@@ -83,13 +83,13 @@ Query：
   },
   "sort": [{"@timestamp": "asc"}],
   "size": 200,
-  "_source": ["@timestamp", "service", "level", "log_label", "request.uuid", "message", "status", "http_method", "url", "response_status"]
+  "_source": ["@timestamp", "service", "level", "log_label", "request.uuid", "trace", "message", "status", "http_method", "url", "response_status"]
 }
 ```
 
-從結果中收集：
-- 所有不重複的 `request.uuid`
-- 所有不重複的 `trace` 欄位值（Jaeger trace ID，16 進位字串）
+從每筆 log 結果的 `_source` 中收集：
+- `request.uuid` → 用於查詢 B（Kibana call chain detail）
+- `trace` → Jaeger trace ID（從 log 欄位取出，16 進位字串）；若該欄位不存在代表此服務未接 Jaeger
 
 **查詢 B：用 request.uuid 拉完整 call chain**
 
