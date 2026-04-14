@@ -4,9 +4,9 @@ description: >-
   Use when triaging production/staging/SIT bugs, analyzing Kibana logs for root cause,
   or investigating microservice call chain failures. Triggers on any Jira ticket ID
   (LIVEBUG-xxx, QA-xxx, etc.) when the user wants to diagnose an issue.
-  Covers: Kibana log query, request.uuid call chain correlation, EXCEPTION/OUTBOUND
-  log analysis, root cause report generation, interactive call chain flowchart,
-  and optional Slack/Jira comment push.
+  Covers: Kibana log query, Jaeger distributed trace lookup, request.uuid call chain
+  correlation, EXCEPTION/OUTBOUND log analysis, root cause report generation,
+  interactive UML sequence diagram with duration annotations, and optional Slack/Jira push.
   Usage: /livebug-triage TICKET-ID [--env prod|stage|sit] [--send]
 allowed-tools: Read, Glob, Grep, Bash, WebFetch, mcp__claude_ai_Atlassian__getJiraIssue, mcp__claude_ai_Atlassian__addCommentToJiraIssue, mcp__claude_ai_Slack__slack_send_message
 ---
@@ -17,19 +17,19 @@ allowed-tools: Read, Glob, Grep, Bash, WebFetch, mcp__claude_ai_Atlassian__getJi
 
 ## 設定
 
-### Kibana 環境對照
-| `--env` | URL |
-|---------|-----|
-| `prod`（預設）| https://kibana.kkday.com/ |
-| `stage` | https://kibana.stage.kkday.com/ |
-| `sit` | https://kibana.sit.kkday.com/ |
+### 環境對照
+| `--env` | Kibana | Jaeger |
+|---------|--------|--------|
+| `prod`（預設）| https://kibana.kkday.com/ | https://jaeger-query.kkday.com/ |
+| `stage` | https://kibana.stage.kkday.com/ | https://jaeger-query.stage.kkday.com/ |
+| `sit` | https://kibana.sit.kkday.com/ | https://jaeger-query.sit.kkday.com/ |
 
 ### Kibana Auth（選填）
 若 Kibana 需要 API Key，使用者可設定環境變數：
 ```
 export KIBANA_API_KEY="your-api-key-here"
 ```
-未設定時嘗試無 auth 連線（VPN 內可能直接通）。
+未設定時嘗試無 auth 連線（VPN 內可能直接通）。Jaeger 通常在 VPN 內無需 auth。
 
 ### Index Pattern
 預設使用 `kkday-api-*`。若需調整，在查詢時指定，例如 `kkday-api-scm-*`。
@@ -87,7 +87,9 @@ Query：
 }
 ```
 
-從結果中收集所有不重複的 `request.uuid`。
+從結果中收集：
+- 所有不重複的 `request.uuid`
+- 所有不重複的 `trace` 欄位值（Jaeger trace ID，16 進位字串）
 
 **查詢 B：用 request.uuid 拉完整 call chain**
 
@@ -105,6 +107,49 @@ Query：
   "size": 500
 }
 ```
+
+**查詢 C（優先）：用 Jaeger trace ID 取完整 distributed trace**
+
+若 Kibana log 有 `trace` 欄位，優先走 Jaeger — 資料比 Kibana log 重建更準確：
+
+```
+GET {jaeger_url}/api/traces/{traceID}
+Headers:
+  Accept: application/json
+```
+
+Jaeger response 關鍵欄位：
+```json
+{
+  "data": [{
+    "spans": [{
+      "spanID": "...",
+      "operationName": "PUT /api/v1/drafts/packages/...",
+      "references": [{"refType": "CHILD_OF", "spanID": "<parentSpanID>"}],
+      "startTime": 1713059093000000,
+      "duration": 42000,
+      "tags": [
+        {"key": "http.method",      "value": "PUT"},
+        {"key": "http.url",         "value": "https://api-product..."},
+        {"key": "http.status_code", "value": 400},
+        {"key": "error",            "value": true}
+      ],
+      "processID": "p1"
+    }],
+    "processes": {
+      "p1": {"serviceName": "kkday-api-scm"}
+    }
+  }]
+}
+```
+
+Jaeger span 轉換規則：
+- `duration`（微秒）→ `durationMs = duration / 1000`（毫秒，顯示在圖上）
+- `references[].refType === "CHILD_OF"` → request 方向（parent 呼叫 child）
+- `tags[error=true]` → `statusClass: "error"`
+- `tags[http.status_code]` → `status`
+- `processID → processes` lookup → `service name`（對應 `services[]` 中的節點）
+- 無 parent（root span）= 入口請求
 
 **Fallback（VPN 不通 / 401 / 連線逾時）：**
 停下來告訴使用者：
@@ -194,7 +239,8 @@ EXCEPTION: status={error_code}
         "method":"PUT","path":"/api/v1/drafts/packages/1967203/descriptions",
         "status":400,"statusClass":"error","errorCode":"129002",
         "errorDesc":"No query results for model [App\\Domains\\Package]",
-        "retryCount":5,"requestUuid":"<uuid>","timestamp":"09:01:33"},
+        "retryCount":5,"requestUuid":"<uuid>","timestamp":"09:01:33",
+        "durationMs": 237},
        {"id":"m3","from":"api-product","to":"kkday-api-scm",
         "label":"400 Bad Request","type":"response",
         "status":400,"statusClass":"error","timestamp":"09:01:34"}
@@ -204,6 +250,7 @@ EXCEPTION: status={error_code}
    - `type: "request"` → 實線箭頭；`type: "response"` → 虛線箭頭
    - `statusClass: "ok"` / `"warn"` / `"error"` → 顏色
    - `retryCount > 1` → 顯示 retry badge（×N）
+   - `durationMs` → 顯示在箭頭下方（來自 Jaeger span duration；<100ms 灰色、100-1000ms 橘色、>1000ms 紅色）
 
 2. 讀取 template：`~/Documents/workspace/livebug-triage/templates/callchain.html.j2`
 3. 將 graph JSON 填入 template 的 `GRAPH_DATA_PLACEHOLDER`（用 Python `json.dumps` 確保安全轉義）

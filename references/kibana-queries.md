@@ -1,11 +1,70 @@
-# Kibana / Elasticsearch Query 參考
+# Kibana / Elasticsearch + Jaeger Query 參考
 
-## Kibana URL 對照
-| 環境 | URL |
-|------|-----|
-| Production | https://kibana.kkday.com/ |
-| Stage | https://kibana.stage.kkday.com/ |
-| SIT | https://kibana.sit.kkday.com/ |
+## 環境 URL 對照
+| 環境 | Kibana | Jaeger |
+|------|--------|--------|
+| Production | https://kibana.kkday.com/ | https://jaeger-query.kkday.com/ |
+| Stage | https://kibana.stage.kkday.com/ | https://jaeger-query.stage.kkday.com/ |
+| SIT | https://kibana.sit.kkday.com/ | https://jaeger-query.sit.kkday.com/ |
+
+---
+
+## Jaeger API
+
+### 查詢單一 Trace
+```
+GET {jaeger_url}/api/traces/{traceID}
+Accept: application/json
+```
+
+從 Kibana log 的 `trace` 欄位取得 traceID（16 進位字串，e.g. `18a3f53a11c8761218a3f53a11c823f4`）。
+
+### Response 結構
+```json
+{
+  "data": [{
+    "traceID": "18a3f53a11c876...",
+    "spans": [{
+      "spanID":        "abc123",
+      "operationName": "PUT /api/v1/drafts/packages/1967203/descriptions",
+      "references":    [{"refType": "CHILD_OF", "spanID": "<parentID>"}],
+      "startTime":     1713059093000000,
+      "duration":      237000,
+      "tags": [
+        {"key": "http.method",      "value": "PUT"},
+        {"key": "http.url",         "value": "https://api-product.kkday.com/..."},
+        {"key": "http.status_code", "value": 400},
+        {"key": "error",            "value": true}
+      ],
+      "processID": "p1"
+    }],
+    "processes": {
+      "p1": {"serviceName": "kkday-api-scm"}
+    }
+  }]
+}
+```
+
+### Span 欄位 → graph JSON 對照
+| Jaeger 欄位 | 說明 | 對應 graph JSON |
+|------------|------|----------------|
+| `operationName` | HTTP method + path | `messages[].label` |
+| `startTime` | 微秒 timestamp | `messages[].timestamp` |
+| `duration` ÷ 1000 | 毫秒 | `messages[].durationMs` |
+| `references[].refType === "CHILD_OF"` | parent span | request 方向 |
+| `tags[http.status_code]` | HTTP 狀態碼 | `messages[].status` |
+| `tags[error=true]` | 是否錯誤 | `statusClass: "error"` |
+| `processID → processes.serviceName` | 服務名稱 | `services[].label` |
+
+### Duration 顏色規則（視覺化圖）
+| 範圍 | 顏色 | 意義 |
+|------|------|------|
+| < 100ms | 灰色 `#4a5568` | 正常 |
+| 100ms – 1s | 淡灰 `#a0aec0` | 可接受 |
+| 1s – 3s | 橘色 `#f6ad55` | 較慢，需留意 |
+| > 3s | 紅色 `#fc8181` | 異常慢 |
+
+---
 
 ## API Endpoint 格式
 
