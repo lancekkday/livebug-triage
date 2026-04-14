@@ -93,6 +93,15 @@
       background: #1a2744; border-radius: 4px;
       padding: 4px 8px; word-break: break-all; margin-top: 4px;
     }
+    .trace-links { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    .trace-link {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; padding: 3px 8px; border-radius: 4px;
+      text-decoration: none; font-weight: 500;
+    }
+    .trace-link.kibana { background: #1a2744; color: #90cdf4; border: 1px solid #2b4a7a; }
+    .trace-link.jaeger { background: #1a2a1a; color: #68d391; border: 1px solid #276749; }
+    .trace-link:hover { opacity: 0.8; }
     .divider { border: none; border-top: 1px solid #2d3748; margin: 10px 0; }
 
     /* ── Footer legend ── */
@@ -150,6 +159,15 @@ const SVC_BOX_R   = 6;
 const ARROW_HEAD  = 9;    // arrowhead length
 
 const COLOR = { ok: '#68d391', warn: '#f6ad55', error: '#fc8181', neutral: '#718096' };
+
+/* ── Env-based URLs for trace links ── */
+const ENV = 'ENV_PLACEHOLDER';
+const KIBANA_BASE = ENV === 'stage' ? 'https://kibana.stage.kkday.com'
+                  : ENV === 'sit'   ? 'https://kibana.sit.kkday.com'
+                  :                   'https://kibana.kkday.com';
+const JAEGER_BASE = ENV === 'stage' ? 'https://jaeger-query.stage.kkday.com'
+                  : ENV === 'sit'   ? 'https://jaeger-query.sit.kkday.com'
+                  :                   'https://jaeger-query.kkday.com';
 
 function statusColor(sc) { return COLOR[sc] || COLOR.neutral; }
 
@@ -389,6 +407,23 @@ function render() {
       });
       svg.appendChild(sc);
     }
+
+    /* duration badge (from Jaeger) — only on request arrows */
+    if (!isResp && msg.durationMs != null) {
+      const durationColor = msg.durationMs > 3000 ? '#fc8181'
+                          : msg.durationMs > 1000 ? '#f6ad55'
+                          : msg.durationMs > 100  ? '#a0aec0'
+                          : '#4a5568';
+      const dLabel = msg.durationMs >= 1000
+        ? `${(msg.durationMs / 1000).toFixed(1)}s`
+        : `${msg.durationMs}ms`;
+      const dur = svgText(dLabel, {
+        x: midX, y: y + 13,
+        fill: durationColor, 'font-size': '9.5',
+        'text-anchor': 'middle', 'dominant-baseline': 'auto'
+      });
+      svg.appendChild(dur);
+    }
   });
 }
 
@@ -426,9 +461,21 @@ function showDetail(msg) {
          ${msg.errorDesc ? `<div class="desc">${esc(msg.errorDesc)}</div>` : ''}
        </div>` : '';
 
-  const uuidBlock = msg.requestUuid
-    ? `<hr class="divider"><div class="detail-title">Request UUID</div>
-       <div class="uuid-box">${esc(msg.requestUuid)}</div>` : '';
+  const uuidBlock = (msg.requestUuid || msg.traceId) ? (() => {
+    const kibanaUrl = msg.requestUuid
+      ? `${KIBANA_BASE}/app/discover#/?_a=(query:(language:kuery,query:'request.uuid:"${msg.requestUuid}"'))`
+      : null;
+    const jaegerUrl = msg.traceId
+      ? `${JAEGER_BASE}/trace/${msg.traceId}`
+      : null;
+    return `<hr class="divider"><div class="detail-title">追蹤 ID</div>
+      ${msg.requestUuid ? `<div class="detail-key" style="font-size:10px;margin-top:4px">request.uuid</div><div class="uuid-box">${esc(msg.requestUuid)}</div>` : ''}
+      ${msg.traceId     ? `<div class="detail-key" style="font-size:10px;margin-top:6px">Jaeger trace</div><div class="uuid-box">${esc(msg.traceId)}</div>` : ''}
+      <div class="trace-links">
+        ${kibanaUrl ? `<a class="trace-link kibana" href="${kibanaUrl}" target="_blank">📋 Kibana</a>` : ''}
+        ${jaegerUrl ? `<a class="trace-link jaeger" href="${jaegerUrl}" target="_blank">🔍 Jaeger</a>` : ''}
+      </div>`;
+  })() : '';
 
   sidebar.innerHTML = `
     <div class="detail-section">
@@ -440,6 +487,7 @@ function showDetail(msg) {
       <div class="detail-row"><span class="detail-key">HTTP Status</span>
         <span class="detail-val ${color}">${esc(msg.status) || '—'}</span></div>
       ${retryRow}
+      ${msg.durationMs != null ? `<div class="detail-row"><span class="detail-key">Duration</span><span class="detail-val ${msg.durationMs > 3000 ? 'error' : msg.durationMs > 1000 ? 'warn' : ''}">${msg.durationMs >= 1000 ? (msg.durationMs/1000).toFixed(1)+'s' : msg.durationMs+'ms'}</span></div>` : ''}
       ${msg.timestamp ? `<div class="detail-row"><span class="detail-key">時間</span><span class="detail-val">${esc(msg.timestamp)}</span></div>` : ''}
       ${errorBlock}
       ${uuidBlock}
