@@ -108,9 +108,9 @@ Query：
 }
 ```
 
-**查詢 C（優先）：用 Jaeger trace ID 取完整 distributed trace**
+**查詢 C：用 Jaeger trace ID 取完整 distributed trace**
 
-若 Kibana log 有 `trace` 欄位，優先走 Jaeger — 資料比 Kibana log 重建更準確：
+若 Kibana log 有 `trace` 欄位，同時查 Jaeger — 兩者資料互補，交互比對：
 
 ```
 GET {jaeger_url}/api/traces/{traceID}
@@ -162,20 +162,40 @@ service: <service> AND level: ERROR AND @timestamp: [<t-4h> TO <t+4h>]
 或直接貼入 raw log 內容，我繼續分析。
 ```
 
-### Step 4 — 分析 Log
+### Step 4 — 交互比對分析（Kibana + Jaeger）
 
-1. 按 `request.uuid` groupBy，每組重建時序 call chain
-2. 識別 `log_label: EXCEPTION` → 抽取 `status`（錯誤碼）和 `desc`（錯誤訊息）
-3. 配對 `log_label: OUTBOUND` → HTTP method、path、response status
-4. 跨多次 retry 聚合 unique error pattern（不同錯誤碼視為不同 pattern）
-5. 區分「外層包裝錯誤」（e.g. `ProductSyncStepException`）vs「內層真因」（e.g. HTTP 400 + status code）
+兩個資料源各有優勢，合併後才是完整圖像：
 
-**Call Chain 節點類型：**
+| 資料源 | 擅長 | 對應用途 |
+|--------|------|---------|
+| **Kibana** (`request.uuid`) | 詳細 error body、application error code、EXCEPTION 完整訊息 | `errorCode`、`errorDesc`、root cause 文字說明 |
+| **Jaeger** (`trace`) | 精確 timing、span parent-child 結構、跨服務拓撲 | `durationMs`、call chain 順序、服務依賴圖 |
+
+**比對步驟：**
+1. 從 Kibana ERROR log 同時取出 `request.uuid` 和 `trace`（兩者都收集）
+2. 用 `request.uuid` 查 Kibana call chain（查詢 B）→ 取得 EXCEPTION 詳情
+3. 用 `trace` 查 Jaeger API（查詢 C）→ 取得 span tree + duration
+4. **合併**：以 Jaeger span 為骨架（結構/時序），用 Kibana EXCEPTION log 填入 `errorCode`/`errorDesc`
+   - 比對鍵：`service name` + `timestamp` 接近（±2s）
+   - 若 Jaeger span 有 `error=true` 但 `errorDesc` 為空 → 從對應的 Kibana EXCEPTION log 補入
+5. 按 `request.uuid` groupBy → 跨多次 retry 聚合 unique error pattern
+6. 區分「外層包裝錯誤」（e.g. `ProductSyncStepException`）vs「內層真因」
+
+每個 `messages[]` 物件同時保留兩個 ID：
+```json
+{
+  "requestUuid": "a1b2c3d4-...",
+  "traceId":     "18a3f53a11c876..."
+}
+```
+→ 側邊欄可直接點擊連到 Kibana Discover 或 Jaeger UI。
+
+**Call Chain 節點類型（Kibana log_label）：**
 | `log_label` | 對應圖中角色 |
 |-------------|------------|
 | `REQUEST` | 入口節點（最左/最上） |
 | `OUTBOUND` | 對外呼叫邊 |
-| `EXCEPTION` | 錯誤節點（標紅） |
+| `EXCEPTION` | 錯誤節點（標紅，補入 errorDesc） |
 | `RESPONSE` | 出口節點 |
 
 ### Step 5 — 輸出分析報告
@@ -239,8 +259,8 @@ EXCEPTION: status={error_code}
         "method":"PUT","path":"/api/v1/drafts/packages/1967203/descriptions",
         "status":400,"statusClass":"error","errorCode":"129002",
         "errorDesc":"No query results for model [App\\Domains\\Package]",
-        "retryCount":5,"requestUuid":"<uuid>","timestamp":"09:01:33",
-        "durationMs": 237},
+        "retryCount":5,"requestUuid":"a1b2c3d4-...","traceId":"18a3f53a11c876...",
+        "timestamp":"09:01:33","durationMs": 237},
        {"id":"m3","from":"api-product","to":"kkday-api-scm",
         "label":"400 Bad Request","type":"response",
         "status":400,"statusClass":"error","timestamp":"09:01:34"}
