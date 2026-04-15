@@ -173,7 +173,7 @@ function statusColor(sc) { return COLOR[sc] || COLOR.neutral; }
 
 function svgEl(tag, attrs = {}) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  for (const [k, v] of Object.entries(attrs)) { if (v != null) el.setAttribute(k, v); }
   return el;
 }
 
@@ -205,10 +205,15 @@ function buildDefs(svg) {
   svg.appendChild(defs);
 }
 
+/* ── Module-level selection state (persists across resize re-renders) ── */
+let selectedRow = null;
+let currentMsg  = null;
+
 /* ── Render ── */
 function render() {
   const svg = document.getElementById('seq-svg');
   svg.innerHTML = '';
+  selectedRow = null;  // old DOM refs are gone after innerHTML reset
 
   const services  = graphData.services  || [];
   const messages  = graphData.messages  || [];
@@ -284,12 +289,12 @@ function render() {
   });
 
   /* ── Messages ── */
-  let selectedRow = null;
-
   messages.forEach((msg, j) => {
     const y    = HDR_H + j * ROW_H + ROW_H / 2;
-    const fi   = svcIdx[msg.from] ?? 0;
-    const ti   = svcIdx[msg.to]   ?? 0;
+    const fi   = svcIdx[msg.from];
+    const ti   = svcIdx[msg.to];
+    // Skip messages whose from/to service IDs don't exist in services[]
+    if (fi == null || ti == null) return;
     const x1   = cx(fi);
     const x2   = cx(ti);
     const isResp = msg.type === 'response';
@@ -314,9 +319,16 @@ function render() {
       if (selectedRow) selectedRow.setAttribute('fill', 'transparent');
       selectedRow = rowBg;
       rowBg.setAttribute('fill', 'rgba(99,179,237,0.09)');
+      currentMsg = msg;
       showDetail(msg);
     });
     svg.appendChild(rowBg);
+
+    // Re-apply highlight after resize re-render
+    if (currentMsg && currentMsg.id === msg.id) {
+      selectedRow = rowBg;
+      rowBg.setAttribute('fill', 'rgba(99,179,237,0.09)');
+    }
 
     /* timestamp */
     if (msg.timestamp) {
@@ -334,7 +346,7 @@ function render() {
       const path = svgEl('path', {
         d: `M ${x1} ${y - loopH/2} C ${x1 + loopW} ${y - loopH/2}, ${x1 + loopW} ${y + loopH/2}, ${x1} ${y + loopH/2}`,
         fill: 'none', stroke: color, 'stroke-width': '2',
-        'stroke-dasharray': isResp ? '6,3' : 'none',
+        'stroke-dasharray': isResp ? '6,3' : null,
         'marker-end': `url(#${markId})`
       });
       svg.appendChild(path);
@@ -356,7 +368,7 @@ function render() {
     const line = svgEl('line', {
       x1: ax1, y1: y, x2: ax2, y2: y,
       stroke: color, 'stroke-width': msg.retryCount > 1 ? '2.5' : '2',
-      'stroke-dasharray': isResp ? '7,4' : 'none',
+      'stroke-dasharray': isResp ? '7,4' : null,
       'marker-end': `url(#${markId})`
     });
     svg.appendChild(line);
@@ -374,7 +386,7 @@ function render() {
 
     /* retry badge */
     if (msg.retryCount > 1) {
-      const badgeX = midX + (labelStr.length * 3.2);
+      const badgeX = Math.min(ax1, ax2) + Math.abs(ax2 - ax1) * 0.72;
       const badge = svgEl('rect', {
         x: badgeX, y: y - 20, width: 30, height: 14,
         rx: 7, fill: '#744210'
@@ -472,8 +484,8 @@ function showDetail(msg) {
       ${msg.requestUuid ? `<div class="detail-key" style="font-size:10px;margin-top:4px">request.uuid</div><div class="uuid-box">${esc(msg.requestUuid)}</div>` : ''}
       ${msg.traceId     ? `<div class="detail-key" style="font-size:10px;margin-top:6px">Jaeger trace</div><div class="uuid-box">${esc(msg.traceId)}</div>` : ''}
       <div class="trace-links">
-        ${kibanaUrl ? `<a class="trace-link kibana" href="${kibanaUrl}" target="_blank">📋 Kibana</a>` : ''}
-        ${jaegerUrl ? `<a class="trace-link jaeger" href="${jaegerUrl}" target="_blank">🔍 Jaeger</a>` : ''}
+        ${kibanaUrl ? `<a class="trace-link kibana" href="${esc(kibanaUrl)}" target="_blank">📋 Kibana</a>` : ''}
+        ${jaegerUrl ? `<a class="trace-link jaeger" href="${esc(jaegerUrl)}" target="_blank">🔍 Jaeger</a>` : ''}
       </div>`;
   })() : '';
 
@@ -501,7 +513,8 @@ function labelOf(id) {
 
 /* ── Init ── */
 render();
-window.addEventListener('resize', render);
+let _resizeTimer;
+window.addEventListener('resize', () => { clearTimeout(_resizeTimer); _resizeTimer = setTimeout(render, 120); });
 </script>
 </body>
 </html>

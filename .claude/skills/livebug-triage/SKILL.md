@@ -8,7 +8,7 @@ description: >-
   correlation, EXCEPTION/OUTBOUND log analysis, root cause report generation,
   interactive UML sequence diagram with duration annotations, and optional Slack/Jira push.
   Usage: /livebug-triage TICKET-ID [--env prod|stage|sit] [--send]
-allowed-tools: Read, Glob, Grep, Bash, WebFetch, mcp__claude_ai_Atlassian__getJiraIssue, mcp__claude_ai_Atlassian__addCommentToJiraIssue, mcp__claude_ai_Slack__slack_send_message
+allowed-tools: Read, Glob, Grep, Bash, WebFetch, mcp__claude_ai_Atlassian__getJiraIssue, mcp__claude_ai_Atlassian__addCommentToJiraIssue, mcp__claude_ai_Slack__slack_send_message, mcp__mixpanel__Run-Query, mcp__mixpanel__Get-User-Replays-Data, mcp__mixpanel__Get-Events, mcp__mixpanel__Get-Property-Values
 ---
 
 # livebug-triage
@@ -58,12 +58,14 @@ export KIBANA_API_KEY="your-api-key-here"
 **查詢 A：找 ERROR log，取 request.uuid**
 
 ```
-POST {kibana_url}/elasticsearch/kkday-api-*/_search
+POST {kibana_url.rstrip('/')}/elasticsearch/kkday-api-*/_search
 Headers:
   kbn-xsrf: true
   Content-Type: application/json
   Authorization: ApiKey {KIBANA_API_KEY}   # 若有設定
 ```
+
+> ⚠️ `kibana_url` 末尾若帶 `/` 需先 strip，否則組出的路徑會有雙斜線（`//elasticsearch`）。
 
 Query：
 ```json
@@ -78,7 +80,7 @@ Query：
       "should": [
         {"match": {"<id_field>": "<id_value>"}}
       ],
-      "minimum_should_match": 0
+      "minimum_should_match": 0   // should 僅影響排序，不過濾；刻意廣撒網以免漏掉 ID 不在 log 裡的錯誤
     }
   },
   "sort": [{"@timestamp": "asc"}],
@@ -162,12 +164,68 @@ service: <service> AND level: ERROR AND @timestamp: [<t-4h> TO <t+4h>]
 或直接貼入 raw log 內容，我繼續分析。
 ```
 
-### Step 4 — 交互比對分析（Kibana + Jaeger）
+### Step 3.5 — 查詢 Mixpanel（可選，前端操作還原）
 
-兩個資料源各有優勢，合併後才是完整圖像：
+**觸發條件**（符合任一即啟動）：
+- ticket description / comment 含有 Mixpanel URL（含 `distinct_id=...`）
+- 問題類型屬於：「選錯方案」「看到錯誤畫面」「下單中途中斷」「客人說沒做 X 但系統顯示 X」
+
+**目的**：還原前端用戶操作路徑，補充 Kibana（後端 API）看不到的前端事件序列。
+
+**Step 3.5a — 抽取 distinct_id**
+
+從 ticket description / comments 的 Mixpanel URL 抽取 `distinct_id`：
+```
+https://mixpanel.com/project/{project_id}/view/.../app/profile#distinct_id={DISTINCT_ID}&...
+```
+
+**Step 3.5b — 拉取 Session Replay + 事件時序**
+
+使用 `mcp__mixpanel__Get-User-Replays-Data`：
+```
+取得 distinct_id={DISTINCT_ID} 在 {reported_time ±2h} 的 session replay 與事件紀錄
+```
+
+**Step 3.5c — 查詢關鍵前端事件**
+
+使用 `mcp__mixpanel__Run-Query`，針對以下常見事件類型：
+
+| 事件名稱 | 說明 |
+|----------|------|
+| `Click_ProdPg_PackageCard` | 用戶選擇方案（含 `pkg_oid` 屬性） |
+| `View_BookingFormPg` | 進入填單頁（帶當時選擇的 `pkg_oid`） |
+| `Click_CheckoutPg_Pay` | 點擊付款 |
+| `View_OrderConfirmPg` | 看到訂單確認頁 |
+
+**Step 3.5d — 建立前端事件時序**
+
+整理成時序清單，加入分析報告：
+```
+📱 Mixpanel 前端操作還原（distinct_id: {DISTINCT_ID}）
+
+18:01:31  Click_ProdPg_PackageCard  pkg_oid=1943551（科學園）
+18:03:10  View_BookingFormPg        pkg_oid=1943551
+18:03:10  Click_ProdPg_PackageCard  pkg_oid=1943517（雲海匯）← 用戶改選
+18:05:22  Click_CheckoutPg_Pay      pkg_oid=1943517
+```
+
+**與 Kibana/Jaeger 的比對鍵**：`pkg_oid`、`timestamp`（±30s）
+
+**Fallback（Mixpanel 不可用 / 無 distinct_id）**：
+```
+⚠️ 無法查詢 Mixpanel（未取得 distinct_id 或無 MCP 連線）
+請提供 Mixpanel 用戶 URL 或 distinct_id，我繼續分析。
+```
+
+---
+
+### Step 4 — 交互比對分析（Kibana + Jaeger + Mixpanel）
+
+三個資料源各有優勢，合併後才是完整圖像：
 
 | 資料源 | 擅長 | 對應用途 |
 |--------|------|---------|
+| **Mixpanel** (`distinct_id`) | 前端點擊事件、用戶操作路徑、session replay | 還原「客人實際做了什麼」，判斷 user error vs system bug |
 | **Kibana** (`request.uuid`) | 詳細 error body、application error code、EXCEPTION 完整訊息 | `errorCode`、`errorDesc`、root cause 文字說明 |
 | **Jaeger** (`trace`) | 精確 timing、span parent-child 結構、跨服務拓撲 | `durationMs`、call chain 順序、服務依賴圖 |
 
@@ -216,6 +274,11 @@ Ticket: "{title}"
 後端 log 定位 ({service}, ±4h):
 {prod/stage/sit} {id} 的 ERROR 共 N 筆，集中在 {time_start}–{time_end} +0800
 之間，多次短間隔 retry。
+
+📱 Mixpanel 前端操作還原:（若有 distinct_id）
+{timestamp}  {event_name}  {key_properties}
+...
+→ {one-line interpretation，e.g. 用戶在 18:03:10 主動改選方案}
 
 🐛 Root Cause（內層錯誤）:
 OUTBOUND: {METHOD} {host}{path}  →  {http_status}
@@ -271,9 +334,17 @@ EXCEPTION: status={error_code}
    - `statusClass: "ok"` / `"warn"` / `"error"` → 顏色
    - `retryCount > 1` → 顯示 retry badge（×N）
    - `durationMs` → 顯示在箭頭下方（來自 Jaeger span duration；<100ms 灰色、100-1000ms 橘色、>1000ms 紅色）
+   - **Mixpanel 前端事件**：若有 Step 3.5 資料，在 `services[]` 加入 `{"id":"user-device","label":"User Device","type":"client"}`，前端點擊事件作為 `user-device → {frontend}` 的 request 箭頭，`statusClass: "ok"`，`label` 為事件名稱（e.g. `Click_ProdPg_PackageCard pkg=1943517`）
 
 2. 讀取 template：`~/Documents/workspace/livebug-triage/templates/callchain.html.j2`
-3. 將 graph JSON 填入 template 的 `GRAPH_DATA_PLACEHOLDER`（用 Python `json.dumps` 確保安全轉義）
+3. 將 graph JSON 填入 template 的 `GRAPH_DATA_PLACEHOLDER`：
+   ```python
+   import json, pathlib
+   graph_json = json.dumps(graph_data).replace('</script>', r'<\/script>')
+   html = pathlib.Path('templates/callchain.html.j2').read_text()
+   html = html.replace('GRAPH_DATA_PLACEHOLDER', graph_json)
+   ```
+   > ⚠️ `json.dumps` 預設不 escape `</script>`；若 log 資料含此字串會提前結束 `<script>` block，需手動 replace。
 4. 寫出到：`/tmp/livebug-{TICKET-ID}-callchain.html`
 5. 執行 `open /tmp/livebug-{TICKET-ID}-callchain.html` 在瀏覽器開啟
 
