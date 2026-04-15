@@ -205,7 +205,7 @@ EXCEPTION: status={error_code}
    - `statusClass: "ok"` / `"warn"` / `"error"` → 顏色
    - `retryCount > 1` → 顯示 retry badge（×N）
 
-2. 讀取 template：`~/Documents/workspace/livebug-triage/templates/callchain.html.j2`
+2. 讀取 template：templates/callchain.html.j2
 3. 將 graph JSON 填入 template 的 `GRAPH_DATA_PLACEHOLDER`（用 Python `json.dumps` 確保安全轉義）
 4. 寫出到：`/tmp/livebug-{TICKET-ID}-callchain.html`
 5. 執行 `open /tmp/livebug-{TICKET-ID}-callchain.html` 在瀏覽器開啟
