@@ -333,7 +333,7 @@ EXCEPTION: status={error_code}
    - `type: "request"` → 實線箭頭；`type: "response"` → 虛線箭頭
    - `statusClass: "ok"` / `"warn"` / `"error"` → 顏色
    - `retryCount > 1` → 顯示 retry badge（×N）
-   - `durationMs` → 顯示在箭頭下方（來自 Jaeger span duration；<100ms 灰色、100-1000ms 橘色、>1000ms 紅色）
+   - `durationMs` → 顯示在箭頭下方（來自 Jaeger span duration；<100ms 灰色、100ms-1s 淡灰、1s-3s 橘色、>3s 紅色）
    - **Mixpanel 前端事件**：若有 Step 3.5 資料，在 `services[]` 加入 `{"id":"user-device","label":"User Device","type":"client"}`，前端點擊事件作為 `user-device → {frontend}` 的 request 箭頭，`statusClass: "ok"`，`label` 為事件名稱（e.g. `Click_ProdPg_PackageCard pkg=1943517`）
 
 2. 讀取 template：`~/Documents/workspace/livebug-triage/templates/callchain.html.j2`
