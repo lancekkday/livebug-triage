@@ -208,7 +208,7 @@ EXCEPTION: status={error_code}
 2. 讀取 template：templates/callchain.html.j2
 3. 將 graph JSON 填入 template 的 `GRAPH_DATA_PLACEHOLDER`（用 Python `json.dumps` 確保安全轉義）
 4. 寫出到：`/tmp/livebug-{TICKET-ID}-callchain.html`
-5. 執行 `open /tmp/livebug-{TICKET-ID}-callchain.html` 在瀏覽器開啟
+5. 在瀏覽器中開啟 /tmp/livebug-{TICKET-ID}-callchain.html
 
 ### Step 7 — 推送（`--send` 模式）
 
