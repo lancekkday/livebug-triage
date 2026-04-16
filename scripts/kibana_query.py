@@ -3,8 +3,7 @@
 Kibana Log Query Tool
 Usage: python3 kibana_query.py <search_keyword> [--env sit|stage|prod] [--minutes 30] [--index new-kklog-*]
 
-SIT/Stage: auto anonymous login (no credentials needed)
-Prod:       needs KIBANA_PROD_API_KEY or KIBANA_PROD_USER/KIBANA_PROD_PASS env vars
+All envs: auto anonymous login, sid cached in tempdir. No credentials needed.
 """
 import urllib.request, json, http.cookiejar, os, sys, argparse
 from pathlib import Path
@@ -55,34 +54,8 @@ def refresh_sid(env, kibana_url):
 
 
 def get_auth_headers(env, kibana_url):
-    if env == "prod":
-        # 優先順序: API Key > Basic Auth > sid cookie (env var or cache)
-        api_key = os.environ.get("KIBANA_PROD_API_KEY")
-        if api_key:
-            return {"Authorization": f"ApiKey {api_key}"}
-        user = os.environ.get("KIBANA_PROD_USER")
-        pwd  = os.environ.get("KIBANA_PROD_PASS")
-        if user and pwd:
-            import base64
-            token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
-            return {"Authorization": f"Basic {token}"}
-        # sid cookie（從環境變數或快取檔）
-        sid = os.environ.get("KIBANA_PROD_SID")
-        if not sid:
-            cache = Path(SID_CACHE_TPL.format(env="prod"))
-            if cache.exists():
-                sid = cache.read_text().strip()
-        if sid:
-            return {"Cookie": f"sid={sid}"}
-        print("⚠️  Production 需要設定認證，擇一設定：", file=sys.stderr)
-        print("     export KIBANA_PROD_API_KEY='...'          # Kibana API Key（推薦）", file=sys.stderr)
-        print("     export KIBANA_PROD_SID='Fe26.2**...'      # 從瀏覽器複製 sid cookie", file=sys.stderr)
-        print("     export KIBANA_PROD_USER='...' KIBANA_PROD_PASS='...'", file=sys.stderr)
-        print("\n  取得 sid：瀏覽器登入 https://kibana.kkday.com → DevTools → Network → 任一請求 → Cookie: sid=...", file=sys.stderr)
-        sys.exit(1)
-    else:
-        sid = load_sid(env, kibana_url)
-        return {"Cookie": f"sid={sid}"}
+    sid = load_sid(env, kibana_url)
+    return {"Cookie": f"sid={sid}"}
 
 
 def do_query(kibana_url, auth_headers, index, keyword, from_t, to_t):
@@ -165,15 +138,9 @@ def main():
     data, err = do_query(kibana_url, auth, args.index, args.keyword, from_t, to_t)
 
     if err == "EXPIRED":
-        if args.env != "prod":
-            new_sid = refresh_sid(args.env, kibana_url)
-            auth = {"Cookie": f"sid={new_sid}"}
-            data, err = do_query(kibana_url, auth, args.index, args.keyword, from_t, to_t)
-        else:
-            print("⚠️  Production sid 已過期，請重新設定：", file=sys.stderr)
-            print("     export KIBANA_PROD_SID='<新的 sid>'", file=sys.stderr)
-            print("  然後刪除快取：rm -f /tmp/.kibana_prod_sid", file=sys.stderr)
-            sys.exit(1)
+        new_sid = refresh_sid(args.env, kibana_url)
+        auth = {"Cookie": f"sid={new_sid}"}
+        data, err = do_query(kibana_url, auth, args.index, args.keyword, from_t, to_t)
 
     if err:
         print(f"❌ 認證失敗: {err}", file=sys.stderr)
